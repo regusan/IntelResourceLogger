@@ -34,7 +34,7 @@ RAPL_TARGETS: List[Tuple[str, str]] = [
 ]
 
 PROC_STAT_PATH = "/proc/stat"
-IGPU_FREQ_PATH = "/sys/class/drm/card0/gt_act_freq_mhz"
+IGPU_FREQ_PATH = "/sys/class/drm/card1/gt_act_freq_mhz"
 CPU_FREQ_PATH = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"
 
 # --- CPU/RAPL/Freq 読み取り (変更なし) ---
