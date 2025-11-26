@@ -16,6 +16,8 @@ import sys
 import time
 import signal
 import argparse
+import subprocess
+import os
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict
 from collections import deque
@@ -24,6 +26,10 @@ from collections import deque
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets, QtCore
 import numpy as np
+
+# --- テーマ設定 (白背景) ---
+pg.setConfigOption('background', 'w')
+pg.setConfigOption('foreground', 'k')
 
 # --- 監視対象の設定 (変更なし) ---
 
@@ -257,14 +263,14 @@ class MonitorWindow(pg.GraphicsLayoutWidget):
         
         # [変更] プロット対象を分割
         self.plot_targets_top = [
-            ("CPU_Usage_Percent", 'r'),
-            ("iGPU_Freq_MHz", 'g'),
-            ("CPU0_Freq_MHz", 'y'),
+            ("CPU_Usage_Percent", 'r'),       # Red
+            ("iGPU_Freq_MHz", 'g'),           # Green (Standard green is usually dark enough, but can be 'darkgreen' if needed. 'g' in pyqtgraph is (0,255,0) which might be too bright on white. Let's use a darker green)
+            ("CPU0_Freq_MHz", 'orange'),      # Orange (Yellow 'y' is too bright on white)
         ]
         self.plot_targets_bottom = [
-            ("Power_Package_W", 'c'),
-            ("Power_Core_W", 'm'),
-            ("Power_Uncore_W", (100, 100, 255)), # 青系の色
+            ("Power_Package_W", 'b'),         # Blue (Cyan 'c' is too bright)
+            ("Power_Core_W", 'm'),            # Magenta (Standard magenta is okay, but could be darker. 'm' is (255,0,255))
+            ("Power_Uncore_W", (0, 0, 150)),  # Dark Blue
         ]
         self.all_plot_targets = self.plot_targets_top + self.plot_targets_bottom
 
@@ -338,6 +344,19 @@ def main():
     if args.interval < 10:
         print(f"Warning: Interval {args.interval}ms is very fast and may "
               "impact performance or stability.", file=sys.stderr, flush=True)
+
+    # --- 権限設定スクリプトの実行 ---
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    init_script = os.path.join(script_dir, "monitorinit.bash")
+    if os.path.exists(init_script):
+        print(f"Running permission setup script: {init_script}")
+        print("You may be asked for your password (sudo).")
+        try:
+            subprocess.run(["bash", init_script], check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"Error running setup script: {e}", file=sys.stderr)
+    else:
+        print(f"Warning: {init_script} not found. Skipping permission setup.")
 
     # --- アプリケーション起動 (変更なし) ---
     app = QtWidgets.QApplication.instance() # 既存のインスタンスを取得
