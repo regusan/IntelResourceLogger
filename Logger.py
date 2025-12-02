@@ -40,8 +40,10 @@ RAPL_TARGETS: List[Tuple[str, str]] = [
 ]
 
 PROC_STAT_PATH = "/proc/stat"
-IGPU_FREQ_PATH = "/sys/class/drm/card1/gt_act_freq_mhz"
-CPU_FREQ_PATH = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"
+FREQ_TARGETS: List[Tuple[str, str, int]] = [
+    ("/sys/class/drm/card1/gt_act_freq_mhz", "iGPU_Freq_MHz", 1),
+    ("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", "CPU0_Freq_MHz", 1000),
+]
 
 # --- CPU/RAPL/Freq 読み取り (変更なし) ---
 
@@ -104,8 +106,8 @@ class MonitorThread(QtCore.QThread):
         self.csv_file = None
         self.header_cols = [
             "Time_ms", "DeltaT_ms", "CPU_Usage_Percent",
-            "iGPU_Freq_MHz", "CPU0_Freq_MHz"
         ]
+        self.header_cols.extend([name for _, name, _ in FREQ_TARGETS])
         self.header_cols.extend([name for _, name in RAPL_TARGETS])
 
     def stop(self):
@@ -183,8 +185,8 @@ class MonitorThread(QtCore.QThread):
                 prev_cpu_times = current_cpu_times
             current_data["CPU_Usage_Percent"] = cpu_usage
 
-            current_data["iGPU_Freq_MHz"] = get_freq_mhz(IGPU_FREQ_PATH)
-            current_data["CPU0_Freq_MHz"] = get_freq_mhz(CPU_FREQ_PATH, divisor=1000)
+            for path, name, divisor in FREQ_TARGETS:
+                current_data[name] = get_freq_mhz(path, divisor)
 
             current_rapl_energy: List[int] = []
             for i, (path, name) in enumerate(RAPL_TARGETS):
@@ -264,9 +266,12 @@ class MonitorWindow(pg.GraphicsLayoutWidget):
         # [変更] プロット対象を分割
         self.plot_targets_top = [
             ("CPU_Usage_Percent", 'r'),       # Red
-            ("iGPU_Freq_MHz", 'g'),           # Green (Standard green is usually dark enough, but can be 'darkgreen' if needed. 'g' in pyqtgraph is (0,255,0) which might be too bright on white. Let's use a darker green)
-            ("CPU0_Freq_MHz", 'orange'),      # Orange (Yellow 'y' is too bright on white)
         ]
+        # FREQ_TARGETS から動的に追加 (色は簡易的に割り当て)
+        freq_colors = ['g', 'orange', 'c', 'y']
+        for i, (_, name, _) in enumerate(FREQ_TARGETS):
+            color = freq_colors[i % len(freq_colors)]
+            self.plot_targets_top.append((name, color))
         self.plot_targets_bottom = [
             ("Power_Package_W", 'b'),         # Blue (Cyan 'c' is too bright)
             ("Power_Core_W", 'm'),            # Magenta (Standard magenta is okay, but could be darker. 'm' is (255,0,255))
@@ -400,7 +405,7 @@ def main():
     print("Press Ctrl+C in terminal or close window (or Pause button) to stop.")
 
     if (sys.flags.interactive != 1) or not hasattr(QtCore, 'PYQT_VERSION'):
-        app.exec_()
+        app.exec()
     
     monitor_thread.wait(2000)
     print("Application finished.", flush=True)
