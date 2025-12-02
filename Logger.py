@@ -43,6 +43,7 @@ PROC_STAT_PATH = "/proc/stat"
 FREQ_TARGETS: List[Tuple[str, str, int]] = [
     ("/sys/class/drm/card1/gt_act_freq_mhz", "iGPU_Freq_MHz", 1),
     ("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", "CPU0_Freq_MHz", 1000),
+    ("/sys/devices/pci0000:00/0000:00:0b.0/npu_current_frequency_mhz", "NPU_Freq_MHz", 1)
 ]
 
 # --- CPU/RAPL/Freq 読み取り (変更なし) ---
