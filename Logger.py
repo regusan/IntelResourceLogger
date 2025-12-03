@@ -248,6 +248,9 @@ class MonitorWindow(pg.GraphicsLayoutWidget):
 
         # [重要] 上下のX軸をリンクさせる
         self.plot_item_bottom.setXLink(self.plot_item_top)
+        
+        # [変更] Y軸の自動スケールを無効化 (パーセンタイルで制御するため)
+        self.plot_item_bottom.enableAutoRange(axis='y', enable=False)
 
         # 3行目: ボタンレイアウト
         button_layout = self.addLayout(row=2, col=0)
@@ -321,6 +324,21 @@ class MonitorWindow(pg.GraphicsLayoutWidget):
             y_data = np.array(self.data[name], dtype=float)
             if name in self.curves:
                 self.curves[name].setData(x=x_data, y=y_data)
+
+        # [追加] 電力グラフ (bottom) のY軸スケールをパーセンタイルで調整
+        # すべての電力データを結合して計算
+        all_power_values = []
+        for name, _ in self.plot_targets_bottom:
+            if name in self.data:
+                all_power_values.extend(self.data[name])
+        
+        if all_power_values:
+            # 98パーセンタイルを計算
+            percent = 98
+            percented = np.percentile(all_power_values, percent)
+            # 最小範囲を確保 (例: 10W) して、極端な拡大を防ぐ
+            y_max = max(percented * 1.1, 10.0)
+            self.plot_item_bottom.setYRange(0, y_max)
 
 
 def main():
