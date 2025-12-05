@@ -18,6 +18,8 @@ import signal
 import argparse
 import subprocess
 import os
+import glob
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict
 from collections import deque
@@ -40,10 +42,103 @@ RAPL_TARGETS: List[Tuple[str, str]] = [
 ]
 
 PROC_STAT_PATH = "/proc/stat"
-FREQ_TARGETS: List[Tuple[str, str, int]] = [
-    ("/sys/class/drm/card1/gt_act_freq_mhz", "iGPU_Freq_MHz", 1),
-    ("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", "CPU0_Freq_MHz", 1000),
-    ("/sys/devices/pci0000:00/0000:00:0b.0/npu_current_frequency_mhz", "NPU_Freq_MHz", 1)
+
+# --- 周波数ターゲットのクラス定義 ---
+
+class FreqTarget(ABC):
+    """周波数取得の基底クラス"""
+    def __init__(self, name: str):
+        self.name = name
+    
+    @abstractmethod
+    def get_freq_mhz(self) -> float:
+        """周波数をMHz単位で返す。エラー時は-1.0を返す"""
+        pass
+
+class SingleFileFreqTarget(FreqTarget):
+    """単一ファイルから周波数を読み取る (iGPU, NPUなど)"""
+    def __init__(self, path: str, name: str, divisor: int = 1):
+        super().__init__(name)
+        self.path = path
+        self.divisor = divisor
+    
+    def get_freq_mhz(self) -> float:
+        try:
+            with open(self.path, 'r') as f:
+                value_str = f.read().strip()
+                if not value_str:
+                    return -1.0
+                return float(value_str) / self.divisor
+        except (FileNotFoundError, IOError, ValueError, PermissionError):
+            return -1.0
+
+class GroupedCpuFreqTarget(FreqTarget):
+    """特定の最大周波数を持つCPUコアグループの平均周波数を計算"""
+    
+    def __init__(self, name: str, paths: List[str]):
+        super().__init__(name)
+        self.paths = paths
+    
+    def get_freq_mhz(self) -> float:
+        values = []
+        for path in self.paths:
+            try:
+                with open(path, 'r') as f:
+                    value_str = f.read().strip()
+                    if value_str:
+                        values.append(float(value_str) / 1000)  # kHz → MHz
+            except (FileNotFoundError, IOError, ValueError, PermissionError):
+                pass
+        if not values:
+            return -1.0
+        return sum(values) / len(values)  # avg
+
+
+def discover_cpu_freq_groups() -> Dict[int, List[str]]:
+    """CPUコアを最大周波数でグループ分けし、{最大周波数(MHz): [パスリスト]} を返す"""
+    all_cpu_dirs = sorted(glob.glob("/sys/devices/system/cpu/cpu[0-9]*"))
+    groups: Dict[int, List[str]] = {}
+    
+    for cpu_dir in all_cpu_dirs:
+        freq_path = f"{cpu_dir}/cpufreq/scaling_cur_freq"
+        max_freq_path = f"{cpu_dir}/cpufreq/cpuinfo_max_freq"
+        
+        if not os.path.exists(freq_path):
+            continue
+        
+        try:
+            with open(max_freq_path, 'r') as f:
+                max_freq_khz = int(f.read().strip())
+            max_freq_mhz = max_freq_khz // 1000  # kHz → MHz (整数)
+            
+            if max_freq_mhz not in groups:
+                groups[max_freq_mhz] = []
+            groups[max_freq_mhz].append(freq_path)
+        except (FileNotFoundError, IOError, ValueError, PermissionError):
+            pass
+    
+    return groups
+
+
+def create_cpu_freq_targets() -> List[FreqTarget]:
+    """最大周波数グループごとにFreqTargetを動的に生成"""
+    targets: List[FreqTarget] = []
+    groups = discover_cpu_freq_groups()
+    
+    # 最大周波数の降順でソート (高いクロックが先)
+    for max_freq_mhz in sorted(groups.keys(), reverse=True):
+        paths = groups[max_freq_mhz]
+        name = f"CPU_{max_freq_mhz}MHz_Avg"
+        targets.append(GroupedCpuFreqTarget(name, paths))
+    
+    return targets
+
+
+# 周波数監視ターゲット (動的に生成)
+FREQ_TARGETS: List[FreqTarget] = [
+    SingleFileFreqTarget("/sys/class/drm/card1/gt_act_freq_mhz", "iGPU_Freq_MHz"),
+    *create_cpu_freq_targets(),  # CPUグループを動的に追加
+    SingleFileFreqTarget("/sys/devices/pci0000:00/0000:00:0b.0/npu_current_frequency_mhz", "NPU_Freq_MHz"),
 ]
 
 # --- CPU/RAPL/Freq 読み取り (変更なし) ---
@@ -106,9 +201,9 @@ class MonitorThread(QtCore.QThread):
         self.reset_on_resume = False
         self.csv_file = None
         self.header_cols = [
-            "Time_ms", "DeltaT_ms", "CPU_Usage_Percent",
+            "Time_ms", "DeltaT_ms",
         ]
-        self.header_cols.extend([name for _, name, _ in FREQ_TARGETS])
+        self.header_cols.extend([target.name for target in FREQ_TARGETS])
         self.header_cols.extend([name for _, name in RAPL_TARGETS])
 
     def stop(self):
@@ -186,8 +281,8 @@ class MonitorThread(QtCore.QThread):
                 prev_cpu_times = current_cpu_times
             current_data["CPU_Usage_Percent"] = cpu_usage
 
-            for path, name, divisor in FREQ_TARGETS:
-                current_data[name] = get_freq_mhz(path, divisor)
+            for target in FREQ_TARGETS:
+                current_data[target.name] = target.get_freq_mhz()
 
             current_rapl_energy: List[int] = []
             for i, (path, name) in enumerate(RAPL_TARGETS):
@@ -267,15 +362,22 @@ class MonitorWindow(pg.GraphicsLayoutWidget):
         self.curves: Dict[str, pg.PlotDataItem] = {}
         self.time_deque = deque(maxlen=self.max_points)
         
-        # [変更] プロット対象を分割
-        self.plot_targets_top = [
-            ("CPU_Usage_Percent", 'r'),       # Red
+        # [変更] プロット対象を分割 (CPU使用率は除外)
+        self.plot_targets_top = []
+        # FREQ_TARGETS から動的に追加 (十分な数の色を用意)
+        freq_colors = [
+            'g',              # green (iGPU)
+            (255, 100, 100),  # light red
+            (100, 100, 255),  # light blue
+            (255, 165, 0),    # orange
+            (180, 0, 180),    # purple
+            (0, 200, 200),    # cyan
+            (150, 150, 0),    # olive
+            (255, 100, 200),  # pink
         ]
-        # FREQ_TARGETS から動的に追加 (色は簡易的に割り当て)
-        freq_colors = ['g', 'orange', 'c', 'y']
-        for i, (_, name, _) in enumerate(FREQ_TARGETS):
+        for i, target in enumerate(FREQ_TARGETS):
             color = freq_colors[i % len(freq_colors)]
-            self.plot_targets_top.append((name, color))
+            self.plot_targets_top.append((target.name, color))
         self.plot_targets_bottom = [
             ("Power_Package_W", 'b'),         # Blue (Cyan 'c' is too bright)
             ("Power_Core_W", 'm'),            # Magenta (Standard magenta is okay, but could be darker. 'm' is (255,0,255))
