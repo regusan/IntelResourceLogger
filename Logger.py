@@ -188,6 +188,21 @@ def get_freq_mhz(path: str, divisor: int = 1) -> float:
 
 # --- 監視スレッド (変更なし) ---
 
+class ExponentialMovingAverage:
+    """指数移動平均 (EMA) を計算するクラス
+    S_t = alpha * Y_t + (1 - alpha) * S_{t-1}
+    """
+    def __init__(self, alpha: float = 0.1):
+        self.alpha = alpha
+        self.value = None
+    
+    def update(self, new_value: float) -> float:
+        if self.value is None:
+            self.value = new_value
+        else:
+            self.value = self.alpha * new_value + (1 - self.alpha) * self.value
+        return self.value
+
 class MonitorThread(QtCore.QThread):
     data_ready = QtCore.Signal(dict) 
 
@@ -205,6 +220,12 @@ class MonitorThread(QtCore.QThread):
         ]
         self.header_cols.extend([target.name for target in FREQ_TARGETS])
         self.header_cols.extend([name for _, name in RAPL_TARGETS])
+        
+        # 電力値の指数移動平均用 (alpha=0.1)
+        self.power_smoothers = {
+            name: ExponentialMovingAverage(alpha=0.2) 
+            for _, name in RAPL_TARGETS
+        }
 
     def stop(self):
         self.is_paused = False
@@ -292,7 +313,10 @@ class MonitorThread(QtCore.QThread):
                     delta_energy_uj = current_energy - prev_rapl_energy[i]
                     if delta_energy_uj < 0: delta_energy_uj = 0
                     power_w = (delta_energy_uj / 1_000_000.0) / delta_t_sec
-                current_data[name] = power_w
+                
+                # 指数移動平均を適用
+                smoothed_power = self.power_smoothers[name].update(power_w)
+                current_data[name] = smoothed_power
                 current_rapl_energy.append(current_energy)
             prev_rapl_energy = current_rapl_energy
 
